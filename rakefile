@@ -1,0 +1,119 @@
+ENV["indir"] ? @indir=ENV["indir"] : nil
+ENV["R1"] ? @read1 = ENV["R1"] : nil
+#@read1 ? @R1_dir=ENV["R1"].pathmap("%d") : nil
+#@read1 ? @R1_basename=ENV["R1"].pathmap("%n") : nil
+@read1 ? @R1_basename  = "#{@read1}".split(".")[0].split("/")[-1] : nil
+ENV["R2"] ? @read2 = ENV["R2"] : nil
+#@read2 ? @R2_dir=ENV["R2"].pathmap("%d") :nil
+#@read2 ? @R2_basename=ENV["R2"].pathmap("%n") : nil
+@read2 ? @R2_basename = "#{@read2}".split(".")[0].split("/")[-1] : nil
+#ENV["samplename"] ? @sample=ENV["samplename"] : nil
+ENV["sampleid"] ? @sampleid=ENV["sampleid"] : nil
+ENV["reference"] ? @reference=ENV["reference"] : nil
+ENV["projectdir"] ? @projectdir=ENV["projectdir"] : nil
+
+
+directory  "results"
+
+
+namespace :fastqc  do
+  desc "Do fastqc quality check of the input data reads"
+  directory  "results/"
+  desc "do fastqc for R1"
+
+  file "results/#{@R1_basename}_fastqc.html" => [ "results", "#{@read1}"] do
+    sh "source fastqc-0.11.5; fastqc -outdir results/ -extract #{@read1}"
+  end
+  file "results/#{@R1_basename}_fastqc.zip" => [ "results", "#{@read1}"] do
+  end
+  file "results/#{@R1_basename}_fastqc" => [ "results", "#{@read1}"] do
+  end
+
+  task :R1 => ["results/#{@R1_basename}_fastqc.html", "results/#{@R1_basename}_fastqc.zip", "results/#{@R1_basename}_fastqc"] do
+    puts "R1 FASTQC completed"
+  end
+
+  desc "do fastqc for R2"
+  file "results/#{@R2_basename}_fastqc.html" => [ "results", "#{@read2}"] do
+    sh "source fastqc-0.11.5;fastqc -outdir results/ -extract #{@read2}"
+  end
+  file "results/#{@R2_basename}_fastqc.zip" => [ "results", "#{@read2}"] do
+  end
+  file "results/#{@R2_basename}_fastqc" => [ "results", "#{@read2}"] do
+  end
+
+  task :R2 => ["results/#{@R2_basename}_fastqc.html", "results/#{@R2_basename}_fastqc.zip", "results/#{@R2_basename}_fastqc"] do
+    puts "R2 FASTQC completed"
+  end
+  task :runR1 => ["R1"] #these tasks are in case if you are running single end reads
+  task :runR2 => ["R2"]
+
+  multitask :run => [:runR1, :runR2] do
+    puts "FASTQC completed"
+  end
+
+
+end
+
+namespace :trimmomatic do
+  desc "Runs Trimmomatic quality trimming tool"
+
+  file "results/#{@R1_basename}_trimmed_paired.fastq" => ["#{@read1}", "#{@read2}"] do
+    sh "source trimmomatic-0.36; source jre-1.7.0.11; trimmomatic PE -threads 2 -phred33 -quiet -validatePairs  #{@read1} #{@read2} results/#{@R1_basename}_trimmed_paired.fastq results/#{@R1_basename}_unpaired.fastq results/#{@R2_basename}_trimmed_paired.fastq results/#{@R2_basename}_unpaired.fastq ILLUMINACLIP:/tsl/software/testing/trimmomatic/0.36/x86_64/share/trimmomatic/adapters/ilmn_adapters.fa:2:30:10 LEADING:15 SLIDINGWINDOW:4:20 TRAILING:15 MINLEN:65"
+  end
+
+  file "results/#{@R2_basename}_trimmed_paired.fastq" => ["#{@read1}", "#{@read2}"] do
+  end
+
+  multitask :run =>  ["fastqc:run", "results/#{@R1_basename}_trimmed_paired.fastq", "results/#{@R2_basename}_trimmed_paired.fastq"] do
+    puts "Trimmomatic completed"
+  end
+
+end
+
+
+
+namespace :bbmap do
+  samfilename="#{@R1_basename}".gsub("_1", "") + ".sam"
+
+  file "results/#{samfilename}" => ["trimmomatic:run"] do
+    puts "results/#{samfilename}"
+    sh "source bbmap-37.90; bbmap.sh overwrite=false ambiguous=all threads=16 rgid=#{samfilename} in1=results/#{@R1_basename}_trimmed_paired.fastq in2=results/#{@R2_basename}_trimmed_paired.fastq out=results/#{samfilename}"
+  end
+  task :run=>["results/#{samfilename}"]
+end
+
+
+namespace :samtools do
+
+  samfiles=FileList["results/#{@sampleid}*.sam"]
+  bamfiles=samfiles.pathmap("%X.bam")
+  samfiles.zip(bamfiles).each do |samfile, bamfile|
+    file bamfile => samfile do
+      sh "source samtools-1.3.1; samtools view -b --reference #{@reference} -o #{bamfile} #{samfile}"
+    end
+  end
+
+  file "results/#{@sampleid}_lanes_merged.bam" => bamfiles do
+    puts bamfiles
+    sh "source samtools-1.3.1; samtools merge -r -f -c -p --threads 8 --reference #{@reference} results/#{@sampleid}_lanes_merged.bam #{bamfiles}"
+  end
+  file "results/#{@sampleid}_lanes_merged_sorted.bam" => ["results/#{@sampleid}_lanes_merged.bam"] do
+    sh "source samtools-1.3.1; samtools sort --reference #{@reference} -o results/#{@sampleid}_lanes_merged_sorted.bam results/#{@sampleid}_lanes_merged.bam"
+  end
+  file "results/#{@sampleid}_lanes_merged_sorted.bam.bai" => ["results/#{@sampleid}_lanes_merged_sorted.bam"] do
+    sh "source samtools-1.3.1; samtools index results/#{@sampleid}_lanes_merged_sorted.bam"
+  end
+  file "results/#{@sampleid}_lanes_merged_sorted.mpileup" => ["results/#{@sampleid}_lanes_merged_sorted.bam.bai"] do
+    sh "source samtools-1.3.1; samtools mpileup --illumina1.3+ --min-BQ 20 --min-MQ 0 --output results/#{@sampleid}_lanes_merged_sorted.mpileup --VCF --output-BP --output-MQ --output-tags 'DP,AD,ADF,ADR,SP,INFO/AD,INFO/ADF,INFO/ADR' --uncompressed --ext-prob 20 --gap-frac 20 --tandem-qual 100 --skip-indels --max-idepth 250 --min-ireads 1 --open-prob 40 --reference #{@reference} results/#{@sampleid}_lanes_merged_sorted.bam"
+  end
+
+  task :run => ["results/#{@sampleid}_lanes_merged.bam", "results/#{@sampleid}_lanes_merged_sorted.bam", "results/#{@sampleid}_lanes_merged_sorted.bam.bai", "results/#{@sampleid}_lanes_merged_sorted.mpileup"]
+end
+
+namespace :varscan do
+  file "results/#{@sampleid}_sorted.varscan.vcf" => ["samtools:run"] do
+    sh "source varscan-2.3.9; varscan mpileup2snp results/#{@sampleid}_lanes_merged_sorted.mpileup --min-coverage 3 --min-reads2 3 --min-avg-qual 20 --min-var-freq 0.01 --min-freq-for-hom 0.75 --p-value 99e-02 --variants --output-vcf results/#{@sampleid}_sorted.varscan.vcf"
+  end
+  task :run => ["results/#{@sampleid}_sorted.varscan.vcf"]
+end
