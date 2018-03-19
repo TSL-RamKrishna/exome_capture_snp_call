@@ -117,3 +117,10 @@ namespace :varscan do
   end
   task :run => ["results/#{@sampleid}_sorted.varscan.vcf"]
 end
+
+namespace :bcftools do
+  file "results/#{@sampleid}_lanes_merged_sorted.vcf" do
+    sh "source bcftools-1.6; bcftools call --keep-alts --variants-only --multiallelic-caller -O v -o results/#{@sampleid}_lanes_merged_sorted.vcf results/#{@sampleid}_lanes_merged_sorted.mpileup"
+  end
+  task :run => ["results/#{@sampleid}_lanes_merged_sorted.vcf"]
+end
